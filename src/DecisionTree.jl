@@ -109,13 +109,18 @@ function _split_info_gain(labels::Vector, features::Matrix, nsubfeatures::Int)
 end
 
 function _split_neg_z1_loss(labels::Vector, features::Matrix, weights::Vector)
+    N = length(labels)
     best = NO_BEST
     best_val = -Inf
     for i in [1:size(features,2)]
-        domain_i = sort(unique(features[:,i]))
-        for d in domain_i[2:]
-            cur_split = features[:,i] .< d
-            value = _neg_z1_loss(labels[cur_split], weights[cur_split]) + _neg_z1_loss(labels[!cur_split], weights[!cur_split])
+        ord = sortperm(features[:,i])
+        features_i = features[ord,i]
+        labels_i = labels[ord]
+        weights_i = weights[ord]
+
+        for (d, range) in UniqueRanges(features_i)
+            Nsplit = range[1]
+            value = _neg_z1_loss(labels_i[1:Nsplit-1], weights_i[1:Nsplit-1]) + _neg_z1_loss(labels_i[Nsplit:N], weights_i[Nsplit:N])
             if value > best_val
                 best_val = value
                 best = (i, d)
