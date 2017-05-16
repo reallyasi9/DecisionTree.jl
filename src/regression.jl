@@ -2,7 +2,7 @@
 mk_rng(rng::AbstractRNG) = rng
 mk_rng(seed::Int) = MersenneTwister(seed)
 
-function _split_mse{T<:Float64, U<:Real}(labels::Vector{T}, features::Matrix{U}, nsubfeatures::Int, rng)
+function _split_mse{T<:Float64, U<:Real}(labels::AbstractVector{T}, features::AbstractMatrix{U}, nsubfeatures::Int, rng)
     nr, nf = size(features)
 
     best = NO_BEST
@@ -47,10 +47,10 @@ end
 mean-squared-error loss over `labels`.
 
 Returns (best_val, best_thresh), where `best_val` is -MSE """
-function _best_mse_loss{T<:Float64, U<:Real}(labels::Vector{T}, features::Vector{U}, domain)
+function _best_mse_loss{T<:Float64, U<:Real}(labels::AbstractVector{T}, features::AbstractVector{U}, domain)
     # True, but costly assert. However, see
     # https://github.com/JuliaStats/StatsBase.jl/issues/164
-    # @assert issorted(features) && issorted(domain) 
+    # @assert issorted(features) && issorted(domain)
     best_val = -Inf
     best_thresh = 0.0
     s_l = s2_l = zero(T)
@@ -88,7 +88,7 @@ function _best_mse_loss{T<:Float64, U<:Real}(labels::Vector{T}, features::Vector
     return best_val, best_thresh
 end
 
-function build_stump{T<:Float64, U<:Real}(labels::Vector{T}, features::Matrix{U}; rng=Base.GLOBAL_RNG)
+function build_stump{T<:Float64, U<:Real}(labels::AbstractVector{T}, features::AbstractMatrix{U}; rng=Base.GLOBAL_RNG)
     S = _split_mse(labels, features, 0, rng)
     if S == NO_BEST
         return Leaf(mean(labels), labels)
@@ -97,10 +97,11 @@ function build_stump{T<:Float64, U<:Real}(labels::Vector{T}, features::Matrix{U}
     split = features[:,id] .< thresh
     return Node(id, thresh,
                 Leaf(mean(labels[split]), labels[split]),
-                Leaf(mean(labels[neg(split)]), labels[neg(split)]))
+                Leaf(mean(labels[neg(split)]), labels[neg(split)]),
+                length(labels))
 end
 
-function build_tree{T<:Float64, U<:Real}(labels::Vector{T}, features::Matrix{U}, maxlabels=5, nsubfeatures=0, maxdepth=-1; rng=Base.GLOBAL_RNG)
+function build_tree{T<:Float64, U<:Real}(labels::AbstractVector{T}, features::AbstractMatrix{U}, maxlabels=5, nsubfeatures=0, maxdepth=-1; rng=Base.GLOBAL_RNG)
     if maxdepth < -1
         error("Unexpected value for maxdepth: $(maxdepth) (expected: maxdepth >= 0, or maxdepth = -1 for infinite depth)")
     end
@@ -114,18 +115,34 @@ function build_tree{T<:Float64, U<:Real}(labels::Vector{T}, features::Matrix{U},
     id, thresh = S
     split = features[:,id] .< thresh
     return Node(id, thresh,
-                build_tree(labels[split], features[split,:], maxlabels, nsubfeatures, max(maxdepth-1, -1); rng=rng),
-                build_tree(labels[neg(split)], features[neg(split),:], maxlabels, nsubfeatures, max(maxdepth-1, -1); rng=rng))
+                build_tree(view(labels, split), view(features, split, :), maxlabels, nsubfeatures, max(maxdepth-1, -1); rng=rng),
+                build_tree(view(labels, neg(split)), view(features, neg(split), :), maxlabels, nsubfeatures, max(maxdepth-1, -1); rng=rng),
+                length(labels))
 end
 
+"""
+    build_forest{T<:Float64, U<:Real}(labels::Vector{T}, features::Matrix{U}, nsubfeatures::Integer, ntrees::Integer, maxlabels=5, partialsampling=0.7, maxdepth=-1; rng=Base.GLOBAL_RNG)
+
+Trains a forest of regression tress.  Parameters are:
+    * `labels`: A `Vector` of outcomes.  The type should be convertable to `Float64`.
+    * `features`: A 2-D `Matrix` of observation features with `Real` type.  The first dimension of `features` must be the same length as `labels`.
+    * `nsubfeatures`: How many subfeatures to use when splitting data at each node.  Must be less than or equal to the length of the second dimension of `features`.
+    * `ntrees`: The number of estimators to train.
+    * `maxlabels`: The maximum number of observations in a leaf node.  If the number of observations is greater than this (and `maxdepth` has not yet been reached), the node will be split.
+    * `partialsampling`: The fraction of samples to use when bootstrapping samples for training trees.  Must be between 0 and 1 (exclusive).
+    * `maxdepth`: The maximum depth of each tree.  If there is a conflict, `maxdepth` overrides `maxlabels`.
+    * `rng`: A random number generator or integer seed for initializing a random number generator.
+"""
 function build_forest{T<:Float64, U<:Real}(labels::Vector{T}, features::Matrix{U}, nsubfeatures::Integer, ntrees::Integer, maxlabels=5, partialsampling=0.7, maxdepth=-1; rng=Base.GLOBAL_RNG)
+    @assert 0 < partialsampling < 1
     rng = mk_rng(rng)::AbstractRNG
-    partialsampling = partialsampling > 1.0 ? 1.0 : partialsampling
     Nlabels = length(labels)
     Nsamples = _int(partialsampling * Nlabels)
+    # Keep these outside the parallel loop to ensure reproducibility of OOB sample.
+    inds = rand(rng, 1:Nlabels, Nsamples, ntrees)
     forest = @parallel (vcat) for i in 1:ntrees
-        inds = rand(rng, 1:Nlabels, Nsamples)
-        build_tree(labels[inds], features[inds,:], maxlabels, nsubfeatures, maxdepth; rng=rng)
+        ix = view(inds, :, i)
+        build_tree(view(labels, ix), view(features, ix, :), maxlabels, nsubfeatures, maxdepth; rng=rng)
     end
-    return Ensemble([forest;])
+    return Ensemble([forest;], inds, Nlabels)
 end

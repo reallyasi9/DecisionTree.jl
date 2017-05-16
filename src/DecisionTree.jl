@@ -2,7 +2,7 @@ __precompile__()
 
 module DecisionTree
 
-using Compat
+using Compat, StatsBase
 
 import Base: length, convert, promote_rule, show, start, next, done
 
@@ -11,7 +11,7 @@ export Leaf, Node, Ensemble, print_tree, depth, build_stump, build_tree,
        apply_forest, apply_forest_proba, nfoldCV_forest, build_adaboost_stumps,
        apply_adaboost_stumps, apply_adaboost_stumps_proba, nfoldCV_stumps,
        majority_vote, ConfusionMatrix, confusion_matrix, mean_squared_error,
-       R2, _int
+       R2, _int, variable_importance
 
 # ScikitLearn API
 export DecisionTreeClassifier, DecisionTreeRegressor, RandomForestClassifier,
@@ -49,18 +49,38 @@ immutable Node
     featval::Any
     left::Union{Leaf,Node}
     right::Union{Leaf,Node}
+    samples::Integer
 end
 
 const LeafOrNode = Union{Leaf,Node}
 
 immutable Ensemble
     trees::Vector{Node}
+    sampleweights::Array{Int, 2}
+    Ensemble(trees::Vector{Node}, inds::Array{Int, 2}, nsamples::Int) = new(trees, _sample_weights(inds, nsamples))
 end
 
-convert(::Type{Node}, x::Leaf) = Node(0, nothing, x, Leaf(nothing,[nothing]))
+convert(::Type{Node}, x::Leaf) = Node(0, nothing, 0., x, Leaf(nothing,[nothing]))
 promote_rule(::Type{Node}, ::Type{Leaf}) = Node
 promote_rule(::Type{Leaf}, ::Type{Node}) = Node
 
+### Iterators ###
+# Iterator interface to trees: iterates through nodes in depth-first order.
+start(tree::Node)::Vector{LeafOrNode} = [tree]
+done(tree::Node, state::Vector{LeafOrNode}) = isempty(state)
+function next(tree::Node, state::Vector{LeafOrNode})
+  n = pop!(state)
+  _push_children!(state, n)
+  return n, state
+end
+function _push_children!(state::Vector{LeafOrNode}, n::Node)
+  push!(state, n.right)
+  push!(state, n.left)
+end
+function _push_children!(state::Vector{LeafOrNode}, n::Leaf)
+end
+
+# Iterator interface over unique ranges of values in a vector.
 immutable UniqueRanges
     v::AbstractVector
 end
@@ -116,8 +136,9 @@ end
 
 function show(io::IO, tree::Node)
     println(io, "Decision Tree")
-    println(io, "Leaves: $(length(tree))")
-    print(io,   "Depth:  $(depth(tree))")
+    println(io, "Split:    [$(tree.featid)] < $(tree.featval)")
+    println(io, "Leaves:   $(length(tree))")
+    print(io,   "Depth:    $(depth(tree))")
 end
 
 function show(io::IO, ensemble::Ensemble)
@@ -125,6 +146,25 @@ function show(io::IO, ensemble::Ensemble)
     println(io, "Trees:      $(length(ensemble))")
     println(io, "Avg Leaves: $(mean([length(tree) for tree in ensemble.trees]))")
     print(io,   "Avg Depth:  $(mean([depth(tree) for tree in ensemble.trees]))")
+end
+
+_sample_weights(inds::Array{Int, 2}, nsamples::Int) = mapslices(x->counts(x, nsamples), inds, 1)
+
+samples(node::Node) = node.samples
+samples(leaf::Leaf) = length(leaf.values)
+variance(node::Node) = variance(node.left) + variance(node.right)
+variance(leaf::Leaf) = var(leaf.values)
+
+function variable_importance(tree::Node; impurity::Function = variance)
+    importance = Dict{Integer, Float64}()
+    for node in tree
+        importance[node.featid] = get(importance, node.featid, 0)
+            + samples(node) * impurity(node)
+            - samples(node.left) * impurity(node.left)
+            - samples(node.right) * impurity(node.right)
+    end
+    importance /= samples(node)
+    return importance
 end
 
 end # module

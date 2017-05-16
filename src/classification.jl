@@ -33,7 +33,7 @@ end
 
 ################################################################################
 
-function _split(labels::Vector, features::Matrix, nsubfeatures::Int, weights::Vector, rng::AbstractRNG)
+function _split(labels::AbstractVector, features::AbstractMatrix, nsubfeatures::Int, weights::Vector, rng::AbstractRNG)
     if weights == [0]
         _split_info_gain(labels, features, nsubfeatures, rng)
     else
@@ -41,7 +41,7 @@ function _split(labels::Vector, features::Matrix, nsubfeatures::Int, weights::Ve
     end
 end
 
-function _split_info_gain(labels::Vector, features::Matrix, nsubfeatures::Int,
+function _split_info_gain(labels::AbstractVector, features::AbstractMatrix, nsubfeatures::Int,
                           rng::AbstractRNG)
     nf = size(features, 2)
     N = length(labels)
@@ -83,7 +83,7 @@ function _split_info_gain(labels::Vector, features::Matrix, nsubfeatures::Int,
     return best
 end
 
-function _split_neg_z1_loss(labels::Vector, features::Matrix, weights::Vector)
+function _split_neg_z1_loss(labels::AbstractVector, features::AbstractMatrix, weights::AbstractVector)
     best = NO_BEST
     best_val = -Inf
     for i in 1:size(features,2)
@@ -100,7 +100,7 @@ function _split_neg_z1_loss(labels::Vector, features::Matrix, weights::Vector)
     return best
 end
 
-function build_stump(labels::Vector, features::Matrix, weights=[0];
+function build_stump(labels::AbstractVector, features::AbstractMatrix, weights::AbstractVector=[0];
                      rng=Base.GLOBAL_RNG)
     S = _split(labels, features, 0, weights, rng)
     if S == NO_BEST
@@ -108,12 +108,15 @@ function build_stump(labels::Vector, features::Matrix, weights=[0];
     end
     id, thresh = S
     split = features[:,id] .< thresh
+    left_split = view(labels, split)
+    right_split = view(labels, neg(split))
     return Node(id, thresh,
-                Leaf(majority_vote(labels[split]), labels[split]),
-                Leaf(majority_vote(labels[neg(split)]), labels[neg(split)]))
+                Leaf(majority_vote(left_split), left_split),
+                Leaf(majority_vote(right_split), right_split),
+                length(labels))
 end
 
-function build_tree(labels::Vector, features::Matrix, nsubfeatures=0, maxdepth=-1; rng=Base.GLOBAL_RNG)
+function build_tree(labels::AbstractVector, features::AbstractMatrix, nsubfeatures=0, maxdepth=-1; rng=Base.GLOBAL_RNG)
     rng = mk_rng(rng)::AbstractRNG
     if maxdepth < -1
         error("Unexpected value for maxdepth: $(maxdepth) (expected: maxdepth >= 0, or maxdepth = -1 for infinite depth)")
@@ -126,30 +129,34 @@ function build_tree(labels::Vector, features::Matrix, nsubfeatures=0, maxdepth=-
     end
     id, thresh = S
     split = features[:,id] .< thresh
-    labels_left = labels[split]
-    labels_right = labels[neg(split)]
+    labels_left = view(labels, split)
+    labels_right = view(labels, neg(split))
     pure_left = all(labels_left .== labels_left[1])
     pure_right = all(labels_right .== labels_right[1])
     if pure_right && pure_left
         return Node(id, thresh,
                     Leaf(labels_left[1], labels_left),
-                    Leaf(labels_right[1], labels_right))
+                    Leaf(labels_right[1], labels_right),
+                    length(labels))
     elseif pure_left
         return Node(id, thresh,
                     Leaf(labels_left[1], labels_left),
-                    build_tree(labels_right,features[neg(split),:], nsubfeatures,
-                               max(maxdepth-1, -1); rng=rng))
+                    build_tree(labels_right, view(features, neg(split), :), nsubfeatures,
+                               max(maxdepth-1, -1); rng=rng),
+                               length(labels))
     elseif pure_right
         return Node(id, thresh,
-                    build_tree(labels_left,features[split,:], nsubfeatures,
+                    build_tree(labels_left, view(features, split, :), nsubfeatures,
                                max(maxdepth-1, -1); rng=rng),
-                    Leaf(labels_right[1], labels_right))
+                    Leaf(labels_right[1], labels_right),
+                    length(labels))
     else
         return Node(id, thresh,
-                    build_tree(labels_left,features[split,:], nsubfeatures,
+                    build_tree(labels_left, view(features, split, :), nsubfeatures,
                                max(maxdepth-1, -1); rng=rng),
-                    build_tree(labels_right,features[neg(split),:], nsubfeatures,
-                               max(maxdepth-1, -1); rng=rng))
+                    build_tree(labels_right, view(features, neg(split), :), nsubfeatures,
+                               max(maxdepth-1, -1); rng=rng),
+                               length(labels))
     end
 end
 
@@ -171,7 +178,8 @@ function prune_tree(tree::LeafOrNode, purity_thresh=1.0)
         else
             return Node(tree.featid, tree.featval,
                         _prune_run(tree.left, purity_thresh),
-                        _prune_run(tree.right, purity_thresh))
+                        _prune_run(tree.right, purity_thresh),
+                        tree.samples)
         end
     end
     pruned = _prune_run(tree, purity_thresh)
@@ -232,16 +240,18 @@ apply_tree_proba(tree::Node, features::Matrix, labels) =
     stack_function_results(row->apply_tree_proba(tree, row, labels), features)
 
 function build_forest(labels::Vector, features::Matrix, nsubfeatures::Integer, ntrees::Integer, partialsampling=0.7, maxdepth=-1; rng=Base.GLOBAL_RNG)
+    @assert 0 < partialsampling < 1
     rng = mk_rng(rng)::AbstractRNG
-    partialsampling = partialsampling > 1.0 ? 1.0 : partialsampling
     Nlabels = length(labels)
     Nsamples = _int(partialsampling * Nlabels)
+    # Keep these outside the parallel loop to ensure reproducibility of OOB sample.
+    inds = rand(rng, 1:Nlabels, Nsamples, ntrees)
     forest = @parallel (vcat) for i in 1:ntrees
-        inds = rand(rng, 1:Nlabels, Nsamples)
-        build_tree(labels[inds], features[inds,:], nsubfeatures, maxdepth;
+        ix = view(inds, :, i)
+        build_tree(view(labels, ix), view(features, ix, :), nsubfeatures, maxdepth;
                    rng=rng)
     end
-    return Ensemble([forest;])
+    return Ensemble([forest;], inds, Nlabels)
 end
 
 function apply_forest(forest::Ensemble, features::Vector)
@@ -287,7 +297,7 @@ apply_forest_proba(forest::Ensemble, features::Matrix, labels) =
     stack_function_results(row->apply_forest_proba(forest, row, labels),
                            features)
 
-function build_adaboost_stumps(labels::Vector, features::Matrix, niterations::Integer; rng=Base.GLOBAL_RNG)
+function build_adaboost_stumps(labels::AbstractVector, features::AbstractMatrix, niterations::Integer; rng=Base.GLOBAL_RNG)
     N = length(labels)
     weights = ones(N) / N
     stumps = Node[]
@@ -307,7 +317,7 @@ function build_adaboost_stumps(labels::Vector, features::Matrix, niterations::In
             break
         end
     end
-    return (Ensemble(stumps), coeffs)
+    return (Ensemble(stumps, ones(Int, N, length(stumps)), N), coeffs)
 end
 
 function apply_adaboost_stumps(stumps::Ensemble, coeffs::Vector{Float64}, features::Vector)
@@ -357,4 +367,3 @@ function apply_adaboost_stumps_proba(stumps::Ensemble, coeffs::Vector{Float64},
                                                            labels),
                            features)
 end
-
