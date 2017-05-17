@@ -56,8 +56,8 @@ const LeafOrNode = Union{Leaf,Node}
 
 immutable Ensemble
     trees::Vector{Node}
-    sampleweights::Array{Int, 2}
-    Ensemble(trees::Vector{Node}, inds::Array{Int, 2}, nsamples::Int) = new(trees, _sample_weights(inds, nsamples))
+    seeds::Vector{UInt32}
+    labels::Int
 end
 
 convert(::Type{Node}, x::Leaf) = Node(0, nothing, 0., x, Leaf(nothing,[nothing]))
@@ -148,8 +148,19 @@ function show(io::IO, ensemble::Ensemble)
     print(io,   "Avg Depth:  $(mean([depth(tree) for tree in ensemble.trees]))")
 end
 
-_sample_weights(inds::Array{Int, 2}, nsamples::Int) = mapslices(x->counts(x, nsamples), inds, 1)
 
+function sample_weights(ens::Ensemble, itree::Integer)
+    rng = MersenneTwister(ens.seeds[itree])
+    nsamples = samples(ens)
+    nlabels = ens.labels
+    inds = rand(rng, 1:nlabels, nsamples)
+    return mapslices(x->counts(x, nlabels), inds, 1)
+end
+
+ib_sample(ens::Ensemble, itree::Integer)  = sample_weights(ens, itree) .>  0
+oob_sample(ens::Ensemble, itree::Integer) = sample_weights(ens, itree) .== 0
+
+samples(ens::Ensemble) = isempty(ens.trees) ? 0 : samples(ens.trees[1])
 samples(node::Node) = node.samples
 samples(leaf::Leaf) = length(leaf.values)
 variance(node::Node) = variance(node.left) + variance(node.right)

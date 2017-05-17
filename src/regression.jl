@@ -129,20 +129,21 @@ Trains a forest of regression tress.  Parameters are:
     * `nsubfeatures`: How many subfeatures to use when splitting data at each node.  Must be less than or equal to the length of the second dimension of `features`.
     * `ntrees`: The number of estimators to train.
     * `maxlabels`: The maximum number of observations in a leaf node.  If the number of observations is greater than this (and `maxdepth` has not yet been reached), the node will be split.
-    * `partialsampling`: The fraction of samples to use when bootstrapping samples for training trees.  Must be between 0 and 1 (exclusive).
+    * `partialsampling`: The fraction of samples to use when bootstrapping samples for training trees.  Must be between 0 (exclusive) and 1 (inclusive).
     * `maxdepth`: The maximum depth of each tree.  If there is a conflict, `maxdepth` overrides `maxlabels`.
     * `rng`: A random number generator or integer seed for initializing a random number generator.
 """
 function build_forest{T<:Float64, U<:Real}(labels::Vector{T}, features::Matrix{U}, nsubfeatures::Integer, ntrees::Integer, maxlabels=5, partialsampling=0.7, maxdepth=-1; rng=Base.GLOBAL_RNG)
-    @assert 0 < partialsampling < 1
+    @assert 0 < partialsampling <= 1
     rng = mk_rng(rng)::AbstractRNG
     Nlabels = length(labels)
     Nsamples = _int(partialsampling * Nlabels)
     # Keep these outside the parallel loop to ensure reproducibility of OOB sample.
-    inds = rand(rng, 1:Nlabels, Nsamples, ntrees)
+    seeds = rand(rng, UInt32, ntrees)
     forest = @parallel (vcat) for i in 1:ntrees
-        ix = view(inds, :, i)
-        build_tree(view(labels, ix), view(features, ix, :), maxlabels, nsubfeatures, maxdepth; rng=rng)
+        irng = MersenneTwister(seeds[i])
+        ix = rand(rng, 1:Nlabels, Nsamples)
+        build_tree(view(labels, ix), view(features, ix, :), maxlabels, nsubfeatures, maxdepth; rng=irng)
     end
-    return Ensemble([forest;], inds, Nlabels)
+    return Ensemble([forest;], seeds, Nlabels)
 end

@@ -239,19 +239,32 @@ end
 apply_tree_proba(tree::Node, features::Matrix, labels) =
     stack_function_results(row->apply_tree_proba(tree, row, labels), features)
 
+"""
+    build_forest(labels::Vector, features::Matrix, nsubfeatures::Integer, ntrees::Integer, partialsampling=0.7, maxdepth=-1; rng=Base.GLOBAL_RNG)
+
+Trains a forest of regression tress.  Parameters are:
+    * `labels`: A `Vector` of outcomes.
+    * `features`: A 2-D `Matrix` of observation features.  The first dimension of `features` must be the same length as `labels`.
+    * `nsubfeatures`: How many subfeatures to use when splitting data at each node.  Must be less than or equal to the length of the second dimension of `features`.
+    * `ntrees`: The number of estimators to train.
+    * `partialsampling`: The fraction of samples to use when bootstrapping samples for training trees.  Must be between 0 (exclusive) and 1 (inclusive).
+    * `maxdepth`: The maximum depth of each tree.  If there is a conflict, `maxdepth` overrides `maxlabels`.
+    * `rng`: A random number generator or integer seed for initializing a random number generator.
+"""
 function build_forest(labels::Vector, features::Matrix, nsubfeatures::Integer, ntrees::Integer, partialsampling=0.7, maxdepth=-1; rng=Base.GLOBAL_RNG)
-    @assert 0 < partialsampling < 1
+    @assert 0 < partialsampling <= 1
     rng = mk_rng(rng)::AbstractRNG
     Nlabels = length(labels)
     Nsamples = _int(partialsampling * Nlabels)
     # Keep these outside the parallel loop to ensure reproducibility of OOB sample.
-    inds = rand(rng, 1:Nlabels, Nsamples, ntrees)
+    seeds = rand(rng, UInt32, ntrees)
     forest = @parallel (vcat) for i in 1:ntrees
-        ix = view(inds, :, i)
+        irng = MersenneTwister(seeds[i])
+        ix = rand(rng, 1:Nlabels, Nsamples)
         build_tree(view(labels, ix), view(features, ix, :), nsubfeatures, maxdepth;
-                   rng=rng)
+                   rng=irng)
     end
-    return Ensemble([forest;], inds, Nlabels)
+    return Ensemble([forest;], seeds, Nlabels)
 end
 
 function apply_forest(forest::Ensemble, features::Vector)
@@ -302,8 +315,11 @@ function build_adaboost_stumps(labels::AbstractVector, features::AbstractMatrix,
     weights = ones(N) / N
     stumps = Node[]
     coeffs = Float64[]
+    seeds = rand(rng, UInt32, niterations)
+    i = 1
     for i in 1:niterations
-        new_stump = build_stump(labels, features, weights; rng=rng)
+        irng = MersenneTwister(seeds[i])
+        new_stump = build_stump(labels, features, weights; rng=irng)
         predictions = apply_tree(new_stump, features)
         err = _weighted_error(labels, predictions, weights)
         new_coeff = 0.5 * log((1.0 + err) / (1.0 - err))
@@ -317,7 +333,7 @@ function build_adaboost_stumps(labels::AbstractVector, features::AbstractMatrix,
             break
         end
     end
-    return (Ensemble(stumps, ones(Int, N, length(stumps)), N), coeffs)
+    return (Ensemble(stumps, seeds[1:i], N), coeffs)
 end
 
 function apply_adaboost_stumps(stumps::Ensemble, coeffs::Vector{Float64}, features::Vector)
