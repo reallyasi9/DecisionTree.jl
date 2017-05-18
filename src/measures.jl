@@ -92,6 +92,9 @@ function majority_vote(labels::AbstractVector)
     return top_vote
 end
 
+predict(labels::AbstractVector) = majority_vote(labels)
+predict(labels::AbstractVector{Float64}) = mean(labels)
+
 ### Classification ###
 
 function confusion_matrix(actual::AbstractVector, predicted::AbstractVector)

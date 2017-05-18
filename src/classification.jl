@@ -267,24 +267,21 @@ function build_forest(labels::Vector, features::Matrix, nsubfeatures::Integer, n
     return Ensemble([forest;], seeds, Nlabels)
 end
 
-function apply_forest(forest::Ensemble, features::Vector)
-    ntrees = length(forest)
+function apply_forest(trees::AbstractVector{Node}, features::AbstractVector)
+    ntrees = length(trees)
     votes = Array{Any}(ntrees)
     for i in 1:ntrees
-        votes[i] = apply_tree(forest.trees[i],features)
+        votes[i] = apply_tree(trees[i],features)
     end
-    if typeof(votes[1]) <: Float64
-        return mean(votes)
-    else
-        return majority_vote(votes)
-    end
+    return predict(votes)
 end
+apply_forest(ensemble::Ensemble, features::AbstractVector) = apply_forest(ensemble.trees, features)
 
-function apply_forest(forest::Ensemble, features::Matrix)
+function apply_forest(trees::AbstractVector{Node}, features::AbstractMatrix)
     N = size(features,1)
     predictions = Array{Any}(N)
     for i in 1:N
-        predictions[i] = apply_forest(forest, _squeeze(features[i,:],1))
+        predictions[i] = apply_forest(trees, _squeeze(features[i,:],1))
     end
     if typeof(predictions[1]) <: Float64
         return float(predictions)
@@ -292,6 +289,7 @@ function apply_forest(forest::Ensemble, features::Matrix)
         return predictions
     end
 end
+apply_forest(ensemble::Ensemble, features::AbstractMatrix) = apply_forest(ensemble.trees, features)
 
 """    apply_forest_proba(forest::Ensemble, features, col_labels::Vector)
 
@@ -301,14 +299,16 @@ n_labels` matrix of probabilities, each row summing up to 1.
 `col_labels` is a vector containing the distinct labels
 (eg. ["versicolor", "virginica", "setosa"]). It specifies the column ordering
 of the output matrix. """
-function apply_forest_proba(forest::Ensemble, features::Vector, labels)
-    votes = [apply_tree(tree, features) for tree in forest.trees]
+function apply_forest_proba(trees::AbstractVector{Node}, features::AbstractVector, labels)
+    votes = [apply_tree(tree, features) for tree in trees]
     return compute_probabilities(labels, votes)
 end
+apply_forest_proba(forest::Ensemble, features::AbstractVector, labels) = apply_forest_proba(forest.trees, features, labels)
 
-apply_forest_proba(forest::Ensemble, features::Matrix, labels) =
-    stack_function_results(row->apply_forest_proba(forest, row, labels),
+apply_forest_proba(trees::AbstractVector{Node}, features::AbstractMatrix, labels) =
+    stack_function_results(row->apply_forest_proba(trees, row, labels),
                            features)
+apply_forest_proba(forest::Ensemble, features::AbstractMatrix, labels) = apply_forest_proba(forest.trees, features, labels)
 
 function build_adaboost_stumps(labels::AbstractVector, features::AbstractMatrix, niterations::Integer; rng=Base.GLOBAL_RNG)
     N = length(labels)

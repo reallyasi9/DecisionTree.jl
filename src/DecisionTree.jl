@@ -11,7 +11,8 @@ export Leaf, Node, Ensemble, print_tree, depth, build_stump, build_tree,
        apply_forest, apply_forest_proba, nfoldCV_forest, build_adaboost_stumps,
        apply_adaboost_stumps, apply_adaboost_stumps_proba, nfoldCV_stumps,
        majority_vote, ConfusionMatrix, confusion_matrix, mean_squared_error,
-       R2, _int, variable_importance
+       R2, _int, sample_weights, oob_sample, ib_sample, oob_samples,
+       oob_variable_importance
 
 # ScikitLearn API
 export DecisionTreeClassifier, DecisionTreeRegressor, RandomForestClassifier,
@@ -97,6 +98,7 @@ next(u::UniqueRanges, s) = (val = u.v[s];
 include("measures.jl")
 include("classification.jl")
 include("regression.jl")
+include("importance.jl")
 include("scikitlearnAPI.jl")
 
 
@@ -160,22 +162,17 @@ end
 ib_sample(ens::Ensemble, itree::Integer)  = sample_weights(ens, itree) .>  0
 oob_sample(ens::Ensemble, itree::Integer) = sample_weights(ens, itree) .== 0
 
+function oob_samples(ens::Ensemble)
+    ntrees = length(ens)
+    s = falses(ens.labels, ntrees)
+    for itree in 1:ntrees
+        s[:, itree] = oob_sample(ens, itree)
+    end
+    return s
+end
+
 samples(ens::Ensemble) = isempty(ens.trees) ? 0 : samples(ens.trees[1])
 samples(node::Node) = node.samples
 samples(leaf::Leaf) = length(leaf.values)
-variance(node::Node) = variance(node.left) + variance(node.right)
-variance(leaf::Leaf) = var(leaf.values)
-
-function variable_importance(tree::Node; impurity::Function = variance)
-    importance = Dict{Integer, Float64}()
-    for node in tree
-        importance[node.featid] = get(importance, node.featid, 0)
-            + samples(node) * impurity(node)
-            - samples(node.left) * impurity(node.left)
-            - samples(node.right) * impurity(node.right)
-    end
-    importance /= samples(node)
-    return importance
-end
 
 end # module
